@@ -97,7 +97,7 @@ function parseAnnounceResp(resp) {
         for (let i = 0; i < iterable.length; i += groupSize) {
             groups.push(iterable.slice(i, i + groupSize));
         }
-        
+
         return groups;
     }
 
@@ -116,5 +116,7 @@ function parseAnnounceResp(resp) {
 }
 
 function respType(resp) {
-    // ...
+    const action = resp.readUInt32BE(0);
+    if (action === 0) return 'connect';
+    if (action === 1) return 'announce';
 }
