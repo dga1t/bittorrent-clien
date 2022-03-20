@@ -1,15 +1,15 @@
 'use strict';
 
 const net = require('net');
+const Queue = require('./queue');
+const Pieces = require('./pieces');
 const tracker = require('./tracker');
 const message = require('./message');
-const Pieces = require('./pieces');
 
 module.exports = torrent => {
-    const requested = [];
     tracker.getPeers(torrent, peers => {
-        const pieces = new Pieces(torrent.info.pieces.length / 20);
-        peers.forEach(peer => download(peer, torrent, requested));
+        const pieces = new Pieces(torrent);
+        peers.forEach(peer => download(peer, torrent, pieces));
     });
 };
 
@@ -19,8 +19,25 @@ function download(peer, torrent, pieces) {
     socket.connect(peer.port, peer.ip, () => {
         socket.write(message.buildHandshake(torrent));
     });
-    const queue = { choked: true, queue: [] };
+
+    const queue = new Queue(torrent);
     onWholeMsg(socket, msg => msgHandler(msg, socket, pieces, queue));
+}
+
+function onWholeMsg(socket, callback) {
+    let savedBuf = Buffer.alloc(0);
+    let handshake = true;
+
+    socket.on('data', recvBuf => {
+        const msgLen = () => handshake ? savedBuf.readUInt8(0) + 49 : savedBuf.readInt32BE(0) + 4;  // calculates the length of a whole message
+        savedBuf = Buffer.concat([savedBuf, recvBuf]);
+
+        while (savedBuf.length >= 4 && savedBuf.length >= msgLen()) {
+            callback(savedBuf.slice(0, msgLen()));
+            savedBuf = savedBuf.slice(msgLen());
+            handshake = false;
+        }
+    });
 }
 
 function msgHandler(msg, socket, pieces, queue) {
@@ -55,15 +72,13 @@ function pieceHandler(payload, socket, requested, queue) {
 }
 
 function requestPiece(socket, pieces, queue) {
-    //2
     if (queue.choked) return null;
 
     while (queue.queue.length) {
-        const pieceIndex = queue.shift();
-        if (pieces.needed(pieceIndex)) {
-            // need to fix this
-            socket.write(message.buildRequest(pieceIndex));
-            pieces.addRequested(pieceIndex);
+        const pieceBlock = queue.deque();
+        if (pieces.needed(pieceBlock)) {
+            socket.write(message.buildRequest(pieceBlock));
+            pieces.addRequested(pieceBlock);
             break;
         }
     }
@@ -73,29 +88,13 @@ function isHandshake(msg) {
     return msg.length === msg.readUInt8(0) + 49 && msg.toString('utf8', 1) === 'BitTorrent protocol';
 }
 
-function onWholeMsg(socket, callback) {
-    let savedBuf = Buffer.alloc(0);
-    let handshake = true;
-
-    socket.on('data', recvBuf => {
-        const msgLen = () => handshake ? savedBuf.readUInt8(0) + 49 : savedBuf.readInt32BE(0) + 4;  // calculates the length of a whole message
-
-        savedBuf = Buffer.concat([savedBuf, recvBuf]);
-
-        while (savedBuf.length >= 4 && savedBuf.length >= msgLen()) {
-            callback(savedBuf.slice(0, msgLen()));
-            savedBuf = savedBuf.slice(msgLen());
-            handshake = false;
-        }
-    });
-}
-
 function unchokeHandler(socket, pieces, queue) {
     queue.choked = false;
-    // 2
     requestPiece(socket, pieces, queue);
 }
 
-function chokeHandler() { ... }
+function chokeHandler(socket) {
+    socket.end();
+}
 
 function bitfieldHandler(payload) { ... }
